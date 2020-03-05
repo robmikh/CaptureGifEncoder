@@ -149,9 +149,14 @@ winrt::IAsyncAction MainAsync(std::vector<std::wstring> const& args)
     });
 
     session.StartCapture();
-    co_await std::chrono::seconds(5);
+    // TODO: enable timed recording through a flag
+    //co_await std::chrono::seconds(5);
+    wprintf(L"Press ENTER to stop recording... ");
+    std::wstring tempString;
+    std::getline(std::wcin, tempString);
     session.Close();
     framePool.Close();
+    co_await std::chrono::milliseconds(100);
 
     winrt::check_hresult(encoder->Commit());
     co_await winrt::Launcher::LaunchFileAsync(file);
