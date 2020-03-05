@@ -65,6 +65,36 @@ winrt::IAsyncAction MainAsync(std::vector<std::wstring> const& args)
     winrt::com_ptr<IWICImageEncoder> imageEncoder;
     winrt::check_hresult(wicFactory->CreateImageEncoder(d2dDevice.get(), imageEncoder.put()));
 
+    // Write the application block
+    // http://www.vurdalakov.net/misc/gif/netscape-looping-application-extension
+    winrt::com_ptr<IWICMetadataQueryWriter> metadata;
+    winrt::check_hresult(encoder->GetMetadataQueryWriter(metadata.put()));
+    {
+        wil::unique_prop_variant value;
+        value.vt = VT_UI1 | VT_VECTOR;
+        value.caub.cElems = 11;
+        std::string text("NETSCAPE2.0");
+        std::vector<uint8_t> chars(text.begin(), text.end());
+        WINRT_VERIFY(chars.size() == 11);
+        value.caub.pElems = chars.data();
+        winrt::check_hresult(metadata->SetMetadataByName(L"/appext/application", &value));
+        value.caub.pElems = nullptr; // Otherwise the wrapper will call CoTaskMemFree
+    }
+    {
+        wil::unique_prop_variant value;
+        value.vt = VT_UI1 | VT_VECTOR;
+        value.caub.cElems = 5;
+        // The first value is the size of the block, which is the fixed value 3.
+        // The second value is the looping extension, which is the fixed value 1.
+        // The third and fourth values comprise an unsigned 2-byte integer (little endian).
+        //     The value of 0 means to loop infinitely.
+        // The final value is the block terminator, which is the fixed value 0.
+        std::vector<uint8_t> data({ 3, 1, 0, 0, 0 });
+        value.caub.pElems = data.data();
+        winrt::check_hresult(metadata->SetMetadataByName(L"/appext/data", &value));
+        value.caub.pElems = nullptr; // Otherwise the wrapper will call CoTaskMemFree
+    }
+
     // Setup Windows.Graphics.Capture
     auto item = util::CreateCaptureItemForWindow(window.WindowHandle);
     auto itemSize = item.Size();
@@ -104,7 +134,7 @@ winrt::IAsyncAction MainAsync(std::vector<std::wstring> const& args)
     // using Direct3D11CaptureFramePool::Create and make sure your thread has a DispatcherQueue and you
     // are pumping messages.
     auto lastTimeStamp = winrt::TimeSpan{ 0 };
-    framePool.FrameArrived([=, &lastTimeStamp](auto& framePool, auto&)
+    framePool.FrameArrived([itemSize, d3dContext, d2dContext, gifTexture, blankTexture, encoder, imageEncoder, &lastTimeStamp](auto& framePool, auto&)
     {
         auto frame = framePool.TryGetNextFrame();
         auto contentSize = frame.ContentSize();
