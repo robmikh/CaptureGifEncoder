@@ -37,6 +37,8 @@ winrt::IAsyncAction MainAsync(std::vector<std::wstring> const& args)
     wprintf(L"Using '%s'\n", window.Title.c_str());
 
     auto d3dDevice = util::CreateD3DDevice();
+    winrt::com_ptr<ID3D11DeviceContext> d3dContext;
+    d3dDevice->GetImmediateContext(d3dContext.put());
     auto device = CreateDirect3DDevice(d3dDevice.as<IDXGIDevice>().get());
     auto d2dFactory = util::CreateD2DFactory();
     auto d2dDevice = util::CreateD2DDevice(d2dFactory, d3dDevice);
@@ -59,12 +61,35 @@ winrt::IAsyncAction MainAsync(std::vector<std::wstring> const& args)
     winrt::check_hresult(wicFactory->CreateImageEncoder(d2dDevice.get(), imageEncoder.put()));
 
     auto item = util::CreateCaptureItemForWindow(window.WindowHandle);
+    auto itemSize = item.Size();
     auto framePool = winrt::Direct3D11CaptureFramePool::CreateFreeThreaded(
         device,
         winrt::DirectXPixelFormat::B8G8R8A8UIntNormalized,
         1,
-        item.Size());
+        itemSize);
     auto session = framePool.CreateCaptureSession(item);
+
+    winrt::com_ptr<ID3D11Texture2D> blankTexture;
+    winrt::com_ptr<ID3D11Texture2D> gifTexture;
+    {
+        D3D11_TEXTURE2D_DESC description = {};
+        description.Width = itemSize.Width;
+        description.Height = itemSize.Height;
+        description.MipLevels = 1;
+        description.ArraySize = 1;
+        description.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+        description.SampleDesc.Count = 1;
+        description.SampleDesc.Quality = 0;
+        description.Usage = D3D11_USAGE_DEFAULT;
+        description.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
+        description.CPUAccessFlags = 0;
+        winrt::check_hresult(d3dDevice->CreateTexture2D(&description, nullptr, blankTexture.put()));
+        winrt::com_ptr<ID3D11RenderTargetView> renderTargetView;
+        winrt::check_hresult(d3dDevice->CreateRenderTargetView(blankTexture.get(), nullptr, renderTargetView.put()));
+        d3dContext->ClearRenderTargetView(renderTargetView.get(), new float[0.0f, 0.0f, 0.0f, 1.0f]);
+
+        winrt::check_hresult(d3dDevice->CreateTexture2D(&description, nullptr, gifTexture.put()));
+    }
 
     auto lastTimeStamp = winrt::TimeSpan{ 0 };
     framePool.FrameArrived([=, &lastTimeStamp](auto& framePool, auto&)
@@ -84,8 +109,27 @@ winrt::IAsyncAction MainAsync(std::vector<std::wstring> const& args)
         // Use 10ms units
         auto frameDelay = millisconds.count() / 10;
 
+        auto width = std::clamp(contentSize.Width, 0, itemSize.Width);
+        auto height = std::clamp(contentSize.Height, 0, itemSize.Height);
+
+        D3D11_BOX region = {};
+        region.left = 0;
+        region.right = width;
+        region.top = 0;
+        region.bottom = height;
+        region.back = 1;
+
+        d3dContext->CopyResource(gifTexture.get(), blankTexture.get());
+        d3dContext->CopySubresourceRegion(
+            gifTexture.get(),
+            0,
+            0, 0, 0,
+            frameTexture.get(),
+            0,
+            &region);
+
         winrt::com_ptr<ID2D1Bitmap1> d2dBitmap;
-        winrt::check_hresult(d2dContext->CreateBitmapFromDxgiSurface(frameTexture.as<IDXGISurface>().get(), nullptr, d2dBitmap.put()));
+        winrt::check_hresult(d2dContext->CreateBitmapFromDxgiSurface(gifTexture.as<IDXGISurface>().get(), nullptr, d2dBitmap.put()));
 
         winrt::com_ptr<IWICBitmapFrameEncode> wicFrame;
         winrt::check_hresult(encoder->CreateNewFrame(wicFrame.put(), nullptr));
