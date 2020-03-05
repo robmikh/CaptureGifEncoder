@@ -20,6 +20,7 @@ namespace util
 
 winrt::IAsyncAction MainAsync(std::vector<std::wstring> const& args)
 {
+    // Arg validation
     if (args.size() <= 0)
     {
         wprintf(L"Invalid input!\n");
@@ -27,6 +28,7 @@ winrt::IAsyncAction MainAsync(std::vector<std::wstring> const& args)
     }
     auto windowQuery = args[0];
 
+    // Find the window we want to record
     auto matchedWindows = FindWindowsByTitle(windowQuery);
     if (matchedWindows.size() <= 0)
     {
@@ -36,6 +38,7 @@ winrt::IAsyncAction MainAsync(std::vector<std::wstring> const& args)
     auto window = matchedWindows[0];
     wprintf(L"Using '%s'\n", window.Title.c_str());
 
+    // Init D3D, D2D, and WIC
     auto d3dDevice = util::CreateD3DDevice();
     winrt::com_ptr<ID3D11DeviceContext> d3dContext;
     d3dDevice->GetImmediateContext(d3dContext.put());
@@ -46,6 +49,7 @@ winrt::IAsyncAction MainAsync(std::vector<std::wstring> const& args)
     winrt::check_hresult(d2dDevice->CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE, d2dContext.put()));
     auto wicFactory = util::CreateWICFactory();
 
+    // TODO: Use args to determine file name/path
     auto currentPath = std::filesystem::current_path();
     auto folder = co_await winrt::StorageFolder::GetFolderFromPathAsync(currentPath.wstring());
     auto file = co_await folder.CreateFileAsync(L"test.gif", winrt::CreationCollisionOption::ReplaceExisting);
@@ -53,6 +57,7 @@ winrt::IAsyncAction MainAsync(std::vector<std::wstring> const& args)
     auto stream = co_await file.OpenAsync(winrt::FileAccessMode::ReadWrite);
     auto abiStream = util::CreateStreamFromRandomAccessStream(stream);
 
+    // Setup WIC to encode a gif
     winrt::com_ptr<IWICBitmapEncoder> encoder;
     winrt::check_hresult(wicFactory->CreateEncoder(GUID_ContainerFormatGif, nullptr, encoder.put()));
     winrt::check_hresult(encoder->Initialize(abiStream.get(), WICBitmapEncoderNoCache));
@@ -60,6 +65,7 @@ winrt::IAsyncAction MainAsync(std::vector<std::wstring> const& args)
     winrt::com_ptr<IWICImageEncoder> imageEncoder;
     winrt::check_hresult(wicFactory->CreateImageEncoder(d2dDevice.get(), imageEncoder.put()));
 
+    // Setup Windows.Graphics.Capture
     auto item = util::CreateCaptureItemForWindow(window.WindowHandle);
     auto itemSize = item.Size();
     auto framePool = winrt::Direct3D11CaptureFramePool::CreateFreeThreaded(
@@ -69,6 +75,7 @@ winrt::IAsyncAction MainAsync(std::vector<std::wstring> const& args)
         itemSize);
     auto session = framePool.CreateCaptureSession(item);
 
+    // We need a blank texture (background) and a texture that will hold the frame we'll be encoding
     winrt::com_ptr<ID3D11Texture2D> blankTexture;
     winrt::com_ptr<ID3D11Texture2D> gifTexture;
     {
@@ -86,11 +93,16 @@ winrt::IAsyncAction MainAsync(std::vector<std::wstring> const& args)
         winrt::check_hresult(d3dDevice->CreateTexture2D(&description, nullptr, blankTexture.put()));
         winrt::com_ptr<ID3D11RenderTargetView> renderTargetView;
         winrt::check_hresult(d3dDevice->CreateRenderTargetView(blankTexture.get(), nullptr, renderTargetView.put()));
-        d3dContext->ClearRenderTargetView(renderTargetView.get(), new float[0.0f, 0.0f, 0.0f, 1.0f]);
+        d3dContext->ClearRenderTargetView(renderTargetView.get(), new float[0.0f, 0.0f, 0.0f, 1.0f]); // RGBA
 
         winrt::check_hresult(d3dDevice->CreateTexture2D(&description, nullptr, gifTexture.put()));
     }
 
+    // Encode frames as they arrive. Because we created our frame pool using 
+    // Direct3D11CaptureFramePool::CreateFreeThreaded, this lambda will fire on a different thread
+    // than our current one. If you'd like the callback to fire on your thread, create the frame pool
+    // using Direct3D11CaptureFramePool::Create and make sure your thread has a DispatcherQueue and you
+    // are pumping messages.
     auto lastTimeStamp = winrt::TimeSpan{ 0 };
     framePool.FrameArrived([=, &lastTimeStamp](auto& framePool, auto&)
     {
@@ -99,6 +111,7 @@ winrt::IAsyncAction MainAsync(std::vector<std::wstring> const& args)
         auto timeStamp = frame.SystemRelativeTime();
         auto frameTexture = GetDXGIInterfaceFromObject<ID3D11Texture2D>(frame.Surface());
 
+        // Compute the frame delay
         if (lastTimeStamp.count() == 0)
         {
             lastTimeStamp = timeStamp;
@@ -109,6 +122,10 @@ winrt::IAsyncAction MainAsync(std::vector<std::wstring> const& args)
         // Use 10ms units
         auto frameDelay = millisconds.count() / 10;
 
+        // In order to support window resizing, we need to only copy out the part of
+        // the buffer that contains the window. If the window is smaller than the buffer,
+        // then it's a straight forward copy using the ContentSize. If the window is larger,
+        // we need to clamp to the size of the buffer. For simplicity, we always clamp.
         auto width = std::clamp(contentSize.Width, 0, itemSize.Width);
         auto height = std::clamp(contentSize.Height, 0, itemSize.Height);
 
@@ -119,7 +136,9 @@ winrt::IAsyncAction MainAsync(std::vector<std::wstring> const& args)
         region.bottom = height;
         region.back = 1;
 
+        // Copy our background to the gif texture
         d3dContext->CopyResource(gifTexture.get(), blankTexture.get());
+        // Copy our window into the gif texture
         d3dContext->CopySubresourceRegion(
             gifTexture.get(),
             0,
@@ -128,15 +147,18 @@ winrt::IAsyncAction MainAsync(std::vector<std::wstring> const& args)
             0,
             &region);
 
+        // Make a D2D bitmap so that we can hand this off to WIC
         winrt::com_ptr<ID2D1Bitmap1> d2dBitmap;
         winrt::check_hresult(d2dContext->CreateBitmapFromDxgiSurface(gifTexture.as<IDXGISurface>().get(), nullptr, d2dBitmap.put()));
 
+        // Setup our WIC frame (note the matching pixel format)
         winrt::com_ptr<IWICBitmapFrameEncode> wicFrame;
         winrt::check_hresult(encoder->CreateNewFrame(wicFrame.put(), nullptr));
         winrt::check_hresult(wicFrame->Initialize(nullptr));
         auto wicPixelFormat = GUID_WICPixelFormat32bppBGRA;
         winrt::check_hresult(wicFrame->SetPixelFormat(&wicPixelFormat));
 
+        // Write our frame delay
         winrt::com_ptr<IWICMetadataQueryWriter> metadata;
         winrt::check_hresult(wicFrame->GetMetadataQueryWriter(metadata.put()));
         wil::unique_prop_variant delayValue;
@@ -144,6 +166,7 @@ winrt::IAsyncAction MainAsync(std::vector<std::wstring> const& args)
         delayValue.uiVal = frameDelay;
         winrt::check_hresult(metadata->SetMetadataByName(L"/grctlext/Delay", &delayValue));
 
+        // Write the frame to our image (this must come after you write the metadata)
         winrt::check_hresult(imageEncoder->WriteFrame(d2dBitmap.get(), wicFrame.get(), nullptr));
         winrt::check_hresult(wicFrame->Commit());
     });
@@ -152,12 +175,16 @@ winrt::IAsyncAction MainAsync(std::vector<std::wstring> const& args)
     // TODO: enable timed recording through a flag
     //co_await std::chrono::seconds(5);
     wprintf(L"Press ENTER to stop recording... ");
+    // Wait for user input
     std::wstring tempString;
     std::getline(std::wcin, tempString);
+
+    // Stop the capture (and give it a little bit of time)
     session.Close();
     framePool.Close();
     co_await std::chrono::milliseconds(100);
 
+    // Finish our recording and display the file
     winrt::check_hresult(encoder->Commit());
     co_await winrt::Launcher::LaunchFileAsync(file);
 }
