@@ -105,9 +105,9 @@ winrt::IAsyncAction MainAsync(std::vector<std::wstring> const& args)
         itemSize);
     auto session = framePool.CreateCaptureSession(item);
 
-    // We need a blank texture (background) and a texture that will hold the frame we'll be encoding
-    winrt::com_ptr<ID3D11Texture2D> blankTexture;
+    // Create a texture that will hold the frame we'll be encoding
     winrt::com_ptr<ID3D11Texture2D> gifTexture;
+    winrt::com_ptr<ID3D11RenderTargetView> renderTargetView;
     {
         D3D11_TEXTURE2D_DESC description = {};
         description.Width = itemSize.Width;
@@ -120,12 +120,8 @@ winrt::IAsyncAction MainAsync(std::vector<std::wstring> const& args)
         description.Usage = D3D11_USAGE_DEFAULT;
         description.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
         description.CPUAccessFlags = 0;
-        winrt::check_hresult(d3dDevice->CreateTexture2D(&description, nullptr, blankTexture.put()));
-        winrt::com_ptr<ID3D11RenderTargetView> renderTargetView;
-        winrt::check_hresult(d3dDevice->CreateRenderTargetView(blankTexture.get(), nullptr, renderTargetView.put()));
-        d3dContext->ClearRenderTargetView(renderTargetView.get(), new float[0.0f, 0.0f, 0.0f, 1.0f]); // RGBA
-
         winrt::check_hresult(d3dDevice->CreateTexture2D(&description, nullptr, gifTexture.put()));
+        winrt::check_hresult(d3dDevice->CreateRenderTargetView(gifTexture.get(), nullptr, renderTargetView.put()));
     }
 
     // Encode frames as they arrive. Because we created our frame pool using 
@@ -134,7 +130,7 @@ winrt::IAsyncAction MainAsync(std::vector<std::wstring> const& args)
     // using Direct3D11CaptureFramePool::Create and make sure your thread has a DispatcherQueue and you
     // are pumping messages.
     auto lastTimeStamp = winrt::TimeSpan{ 0 };
-    framePool.FrameArrived([itemSize, d3dContext, d2dContext, gifTexture, blankTexture, encoder, imageEncoder, &lastTimeStamp](auto& framePool, auto&)
+    framePool.FrameArrived([itemSize, d3dContext, d2dContext, gifTexture, encoder, imageEncoder, renderTargetView, &lastTimeStamp](auto& framePool, auto&)
     {
         auto frame = framePool.TryGetNextFrame();
         auto contentSize = frame.ContentSize();
@@ -166,8 +162,8 @@ winrt::IAsyncAction MainAsync(std::vector<std::wstring> const& args)
         region.bottom = height;
         region.back = 1;
 
-        // Copy our background to the gif texture
-        d3dContext->CopyResource(gifTexture.get(), blankTexture.get());
+        // Clear the texture to black
+        d3dContext->ClearRenderTargetView(renderTargetView.get(), new float[0.0f, 0.0f, 0.0f, 1.0f]); // RGBA
         // Copy our window into the gif texture
         d3dContext->CopySubresourceRegion(
             gifTexture.get(),
