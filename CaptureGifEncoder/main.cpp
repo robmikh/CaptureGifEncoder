@@ -18,6 +18,8 @@ namespace util
     using namespace robmikh::common::uwp;
 }
 
+float CLEARCOLOR[] = { 0.0f, 0.0f, 0.0f, 1.0f }; // RGBA
+
 winrt::IAsyncAction MainAsync(std::vector<std::wstring> const& args)
 {
     // Arg validation
@@ -70,7 +72,7 @@ winrt::IAsyncAction MainAsync(std::vector<std::wstring> const& args)
     winrt::com_ptr<IWICMetadataQueryWriter> metadata;
     winrt::check_hresult(encoder->GetMetadataQueryWriter(metadata.put()));
     {
-        wil::unique_prop_variant value;
+        PROPVARIANT value = {};
         value.vt = VT_UI1 | VT_VECTOR;
         value.caub.cElems = 11;
         std::string text("NETSCAPE2.0");
@@ -78,10 +80,9 @@ winrt::IAsyncAction MainAsync(std::vector<std::wstring> const& args)
         WINRT_VERIFY(chars.size() == 11);
         value.caub.pElems = chars.data();
         winrt::check_hresult(metadata->SetMetadataByName(L"/appext/application", &value));
-        value.caub.pElems = nullptr; // Otherwise the wrapper will call CoTaskMemFree
     }
     {
-        wil::unique_prop_variant value;
+        PROPVARIANT value = {};
         value.vt = VT_UI1 | VT_VECTOR;
         value.caub.cElems = 5;
         // The first value is the size of the block, which is the fixed value 3.
@@ -92,7 +93,6 @@ winrt::IAsyncAction MainAsync(std::vector<std::wstring> const& args)
         std::vector<uint8_t> data({ 3, 1, 0, 0, 0 });
         value.caub.pElems = data.data();
         winrt::check_hresult(metadata->SetMetadataByName(L"/appext/data", &value));
-        value.caub.pElems = nullptr; // Otherwise the wrapper will call CoTaskMemFree
     }
 
     // Setup Windows.Graphics.Capture
@@ -163,7 +163,7 @@ winrt::IAsyncAction MainAsync(std::vector<std::wstring> const& args)
         region.back = 1;
 
         // Clear the texture to black
-        d3dContext->ClearRenderTargetView(renderTargetView.get(), new float[0.0f, 0.0f, 0.0f, 1.0f]); // RGBA
+        d3dContext->ClearRenderTargetView(renderTargetView.get(), CLEARCOLOR); 
         // Copy our window into the gif texture
         d3dContext->CopySubresourceRegion(
             gifTexture.get(),
@@ -187,10 +187,12 @@ winrt::IAsyncAction MainAsync(std::vector<std::wstring> const& args)
         // Write our frame delay
         winrt::com_ptr<IWICMetadataQueryWriter> metadata;
         winrt::check_hresult(wicFrame->GetMetadataQueryWriter(metadata.put()));
-        wil::unique_prop_variant delayValue;
-        delayValue.vt = VT_UI2;
-        delayValue.uiVal = frameDelay;
-        winrt::check_hresult(metadata->SetMetadataByName(L"/grctlext/Delay", &delayValue));
+        {
+            PROPVARIANT delayValue = {};
+            delayValue.vt = VT_UI2;
+            delayValue.uiVal = static_cast<unsigned short>(frameDelay);
+            winrt::check_hresult(metadata->SetMetadataByName(L"/grctlext/Delay", &delayValue));
+        }
 
         // Write the frame to our image (this must come after you write the metadata)
         winrt::check_hresult(imageEncoder->WriteFrame(d2dBitmap.get(), wicFrame.get(), nullptr));
