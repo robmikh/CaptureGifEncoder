@@ -57,17 +57,19 @@ winrt::IAsyncAction MainAsync(std::vector<std::wstring> const& args)
     
     // Identify our capture target
     auto item = util::CreateCaptureItemForWindow(window.WindowHandle);
-    auto itemSize = item.Size();
+    RECT windowRect = {};
+    winrt::check_hresult(DwmGetWindowAttribute(window.WindowHandle, DWMWA_EXTENDED_FRAME_BOUNDS, reinterpret_cast<void*>(&windowRect), sizeof(windowRect)));
+    winrt::SizeInt32 captureSize = { windowRect.right - windowRect.left, windowRect.bottom - windowRect.top };
 
     // Setup our gif encoder
-    auto encoder = std::make_shared<GifEncoder>(d3dDevice, d3dContext, d2dDevice, wicFactory, stream, itemSize);
+    auto encoder = std::make_shared<GifEncoder>(d3dDevice, d3dContext, d2dDevice, wicFactory, stream, captureSize);
 
     // Setup Windows.Graphics.Capture
     auto framePool = winrt::Direct3D11CaptureFramePool::CreateFreeThreaded(
         device,
         winrt::DirectXPixelFormat::B8G8R8A8UIntNormalized,
         1,
-        itemSize);
+        captureSize);
     auto session = framePool.CreateCaptureSession(item);
 
     // Encode frames as they arrive. Because we created our frame pool using 
@@ -75,7 +77,7 @@ winrt::IAsyncAction MainAsync(std::vector<std::wstring> const& args)
     // than our current one. If you'd like the callback to fire on your thread, create the frame pool
     // using Direct3D11CaptureFramePool::Create and make sure your thread has a DispatcherQueue and you
     // are pumping messages.
-    framePool.FrameArrived([itemSize, d3dContext, encoder](auto& framePool, auto&)
+    framePool.FrameArrived([captureSize, d3dContext, encoder](auto& framePool, auto&)
     {
         auto frame = framePool.TryGetNextFrame();
         encoder->ProcessFrame(frame);

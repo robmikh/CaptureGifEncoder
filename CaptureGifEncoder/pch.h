@@ -35,6 +35,9 @@
 #include <d2d1_3.h>
 #include <wincodec.h>
 
+// DWM
+#include <dwmapi.h>
+
 // Helpers
 #include <robmikh.common/d3dHelpers.h>
 #include <robmikh.common/direct3d11.interop.h>
