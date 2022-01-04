@@ -135,17 +135,28 @@ winrt::IAsyncAction MainAsync(std::vector<std::wstring> const& args)
     framePool.FrameArrived([itemSize, d3dContext, d2dContext, gifTexture, encoder, imageEncoder, renderTargetView, frameCompositor, &lastTimeStamp](auto& framePool, auto&)
     {
         auto frame = framePool.TryGetNextFrame();
-        auto composedFrame = frameCompositor->ProcessFrame(frame);
+        auto timeStamp = frame.SystemRelativeTime();
 
-        auto timeStamp = composedFrame.SystemRelativeTime;
+        auto firstFrame = false;
 
-        // Compute the frame delay
+        // Compute frame delta
         if (lastTimeStamp.count() == 0)
         {
             lastTimeStamp = timeStamp;
+            firstFrame = true;
         }
         auto timeStampDelta = timeStamp - lastTimeStamp;
+
+        // Throttle frame processing to 30fps
+        if (!firstFrame && timeStampDelta < std::chrono::milliseconds(33))
+        {
+            return;
+        }
         lastTimeStamp = timeStamp;
+
+        auto composedFrame = frameCompositor->ProcessFrame(frame);
+
+        // Compute the frame delay
         auto millisconds = std::chrono::duration_cast<std::chrono::milliseconds>(timeStampDelta);
         // Use 10ms units
         auto frameDelay = millisconds.count() / 10;

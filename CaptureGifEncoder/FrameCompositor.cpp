@@ -59,7 +59,6 @@ ComposedFrame FrameCompositor::ProcessFrame(winrt::Direct3D11CaptureFrame const&
     region.bottom = height;
     region.back = 1;
 
-
     m_d3dContext->CopySubresourceRegion(m_outputTexture.get(), 0, 0, 0, 0, frameTexture.get(), 0, &region);
 
     ComposedFrame composedFrame = {};
