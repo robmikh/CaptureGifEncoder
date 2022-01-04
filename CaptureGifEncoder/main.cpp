@@ -20,21 +20,6 @@ namespace util
     using namespace robmikh::common::uwp;
 }
 
-inline auto CreateD3DDevice(UINT flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT)
-{
-    flags |= D3D11_CREATE_DEVICE_DEBUG;
-
-    winrt::com_ptr<ID3D11Device> device;
-    HRESULT hr = util::CreateD3DDevice(D3D_DRIVER_TYPE_HARDWARE, flags, device);
-    if (DXGI_ERROR_UNSUPPORTED == hr)
-    {
-        hr = util::CreateD3DDevice(D3D_DRIVER_TYPE_WARP, flags, device);
-    }
-
-    winrt::check_hresult(hr);
-    return device;
-}
-
 winrt::IAsyncAction MainAsync(std::vector<std::wstring> const& args)
 {
     // Arg validation
@@ -56,7 +41,7 @@ winrt::IAsyncAction MainAsync(std::vector<std::wstring> const& args)
     wprintf(L"Using '%s'\n", window.Title.c_str());
 
     // Init D3D, D2D, and WIC
-    auto d3dDevice = CreateD3DDevice();
+    auto d3dDevice = util::CreateD3DDevice();
     winrt::com_ptr<ID3D11DeviceContext> d3dContext;
     d3dDevice->GetImmediateContext(d3dContext.put());
     auto device = CreateDirect3DDevice(d3dDevice.as<IDXGIDevice>().get());
