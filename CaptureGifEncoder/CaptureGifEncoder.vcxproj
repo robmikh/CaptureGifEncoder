@@ -118,10 +118,12 @@
     <None Include="PropertySheet.props" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="FrameCompositor.cpp" />
     <ClCompile Include="main.cpp" />
     <ClCompile Include="pch.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="FrameCompositor.h" />
     <ClInclude Include="pch.h" />
     <ClInclude Include="WindowInfo.h" />
   </ItemGroup>

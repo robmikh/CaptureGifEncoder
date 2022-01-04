@@ -13,9 +13,11 @@
   <ItemGroup>
     <ClCompile Include="main.cpp" />
     <ClCompile Include="pch.cpp" />
+    <ClCompile Include="FrameCompositor.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="pch.h" />
     <ClInclude Include="WindowInfo.h" />
+    <ClInclude Include="FrameCompositor.h" />
   </ItemGroup>
 </Project>

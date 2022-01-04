@@ -1,5 +1,6 @@
 ﻿#include "pch.h"
 #include "WindowInfo.h"
+#include "FrameCompositor.h"
 
 namespace winrt
 {
@@ -17,8 +18,6 @@ namespace util
     using namespace robmikh::common::desktop;
     using namespace robmikh::common::uwp;
 }
-
-float CLEARCOLOR[] = { 0.0f, 0.0f, 0.0f, 1.0f }; // RGBA
 
 winrt::IAsyncAction MainAsync(std::vector<std::wstring> const& args)
 {
@@ -105,6 +104,9 @@ winrt::IAsyncAction MainAsync(std::vector<std::wstring> const& args)
         itemSize);
     auto session = framePool.CreateCaptureSession(item);
 
+    // Setup our frame compositor
+    auto frameCompositor = std::make_shared<FrameCompositor>(d3dDevice, d3dContext, itemSize);
+
     // Create a texture that will hold the frame we'll be encoding
     winrt::com_ptr<ID3D11Texture2D> gifTexture;
     winrt::com_ptr<ID3D11RenderTargetView> renderTargetView;
@@ -130,12 +132,12 @@ winrt::IAsyncAction MainAsync(std::vector<std::wstring> const& args)
     // using Direct3D11CaptureFramePool::Create and make sure your thread has a DispatcherQueue and you
     // are pumping messages.
     auto lastTimeStamp = winrt::TimeSpan{ 0 };
-    framePool.FrameArrived([itemSize, d3dContext, d2dContext, gifTexture, encoder, imageEncoder, renderTargetView, &lastTimeStamp](auto& framePool, auto&)
+    framePool.FrameArrived([itemSize, d3dContext, d2dContext, gifTexture, encoder, imageEncoder, renderTargetView, frameCompositor, &lastTimeStamp](auto& framePool, auto&)
     {
         auto frame = framePool.TryGetNextFrame();
-        auto contentSize = frame.ContentSize();
-        auto timeStamp = frame.SystemRelativeTime();
-        auto frameTexture = GetDXGIInterfaceFromObject<ID3D11Texture2D>(frame.Surface());
+        auto composedFrame = frameCompositor->ProcessFrame(frame);
+
+        auto timeStamp = composedFrame.SystemRelativeTime;
 
         // Compute the frame delay
         if (lastTimeStamp.count() == 0)
@@ -148,30 +150,10 @@ winrt::IAsyncAction MainAsync(std::vector<std::wstring> const& args)
         // Use 10ms units
         auto frameDelay = millisconds.count() / 10;
 
-        // In order to support window resizing, we need to only copy out the part of
-        // the buffer that contains the window. If the window is smaller than the buffer,
-        // then it's a straight forward copy using the ContentSize. If the window is larger,
-        // we need to clamp to the size of the buffer. For simplicity, we always clamp.
-        auto width = std::clamp(contentSize.Width, 0, itemSize.Width);
-        auto height = std::clamp(contentSize.Height, 0, itemSize.Height);
-
-        D3D11_BOX region = {};
-        region.left = 0;
-        region.right = width;
-        region.top = 0;
-        region.bottom = height;
-        region.back = 1;
-
-        // Clear the texture to black
-        d3dContext->ClearRenderTargetView(renderTargetView.get(), CLEARCOLOR); 
-        // Copy our window into the gif texture
-        d3dContext->CopySubresourceRegion(
+        // Copy the composed frame into the gif texture
+        d3dContext->CopyResource(
             gifTexture.get(),
-            0,
-            0, 0, 0,
-            frameTexture.get(),
-            0,
-            &region);
+            composedFrame.Texture.get());
 
         // Make a D2D bitmap so that we can hand this off to WIC
         winrt::com_ptr<ID2D1Bitmap1> d2dBitmap;
