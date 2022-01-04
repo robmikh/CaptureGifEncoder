@@ -15,12 +15,14 @@
     <ClCompile Include="pch.cpp" />
     <ClCompile Include="FrameCompositor.cpp" />
     <ClCompile Include="TextureDiffer.cpp" />
+    <ClCompile Include="GifEncoder.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="pch.h" />
     <ClInclude Include="WindowInfo.h" />
     <ClInclude Include="FrameCompositor.h" />
     <ClInclude Include="TextureDiffer.h" />
+    <ClInclude Include="GifEncoder.h" />
   </ItemGroup>
   <ItemGroup>
     <FxCompile Include="TextureDiff.hlsl" />

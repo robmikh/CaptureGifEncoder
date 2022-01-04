@@ -155,12 +155,14 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="FrameCompositor.cpp" />
+    <ClCompile Include="GifEncoder.cpp" />
     <ClCompile Include="main.cpp" />
     <ClCompile Include="pch.cpp" />
     <ClCompile Include="TextureDiffer.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="FrameCompositor.h" />
+    <ClInclude Include="GifEncoder.h" />
     <ClInclude Include="pch.h" />
     <ClInclude Include="TextureDiffer.h" />
     <ClInclude Include="WindowInfo.h" />
