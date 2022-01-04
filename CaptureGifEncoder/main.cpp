@@ -1,6 +1,7 @@
 ﻿#include "pch.h"
 #include "WindowInfo.h"
 #include "FrameCompositor.h"
+#include "TextureDiffer.h"
 
 namespace winrt
 {
@@ -17,6 +18,21 @@ namespace util
 {
     using namespace robmikh::common::desktop;
     using namespace robmikh::common::uwp;
+}
+
+inline auto CreateD3DDevice(UINT flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT)
+{
+    flags |= D3D11_CREATE_DEVICE_DEBUG;
+
+    winrt::com_ptr<ID3D11Device> device;
+    HRESULT hr = util::CreateD3DDevice(D3D_DRIVER_TYPE_HARDWARE, flags, device);
+    if (DXGI_ERROR_UNSUPPORTED == hr)
+    {
+        hr = util::CreateD3DDevice(D3D_DRIVER_TYPE_WARP, flags, device);
+    }
+
+    winrt::check_hresult(hr);
+    return device;
 }
 
 winrt::IAsyncAction MainAsync(std::vector<std::wstring> const& args)
@@ -40,7 +56,7 @@ winrt::IAsyncAction MainAsync(std::vector<std::wstring> const& args)
     wprintf(L"Using '%s'\n", window.Title.c_str());
 
     // Init D3D, D2D, and WIC
-    auto d3dDevice = util::CreateD3DDevice();
+    auto d3dDevice = CreateD3DDevice();
     winrt::com_ptr<ID3D11DeviceContext> d3dContext;
     d3dDevice->GetImmediateContext(d3dContext.put());
     auto device = CreateDirect3DDevice(d3dDevice.as<IDXGIDevice>().get());
@@ -104,12 +120,12 @@ winrt::IAsyncAction MainAsync(std::vector<std::wstring> const& args)
         itemSize);
     auto session = framePool.CreateCaptureSession(item);
 
-    // Setup our frame compositor
+    // Setup our frame compositor and differ
     auto frameCompositor = std::make_shared<FrameCompositor>(d3dDevice, d3dContext, itemSize);
+    auto textureDiffer = std::make_shared<TextureDiffer>(d3dDevice, d3dContext, itemSize);
 
     // Create a texture that will hold the frame we'll be encoding
     winrt::com_ptr<ID3D11Texture2D> gifTexture;
-    winrt::com_ptr<ID3D11RenderTargetView> renderTargetView;
     {
         D3D11_TEXTURE2D_DESC description = {};
         description.Width = itemSize.Width;
@@ -119,11 +135,9 @@ winrt::IAsyncAction MainAsync(std::vector<std::wstring> const& args)
         description.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
         description.SampleDesc.Count = 1;
         description.SampleDesc.Quality = 0;
-        description.Usage = D3D11_USAGE_DEFAULT;
-        description.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
-        description.CPUAccessFlags = 0;
+        description.Usage = D3D11_USAGE_STAGING;
+        description.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
         winrt::check_hresult(d3dDevice->CreateTexture2D(&description, nullptr, gifTexture.put()));
-        winrt::check_hresult(d3dDevice->CreateRenderTargetView(gifTexture.get(), nullptr, renderTargetView.put()));
     }
 
     // Encode frames as they arrive. Because we created our frame pool using 
@@ -132,7 +146,7 @@ winrt::IAsyncAction MainAsync(std::vector<std::wstring> const& args)
     // using Direct3D11CaptureFramePool::Create and make sure your thread has a DispatcherQueue and you
     // are pumping messages.
     auto lastTimeStamp = winrt::TimeSpan{ 0 };
-    framePool.FrameArrived([itemSize, d3dContext, d2dContext, gifTexture, encoder, imageEncoder, renderTargetView, frameCompositor, &lastTimeStamp](auto& framePool, auto&)
+    framePool.FrameArrived([itemSize, d3dContext, d2dContext, gifTexture, encoder, imageEncoder, frameCompositor, textureDiffer, &lastTimeStamp](auto& framePool, auto&)
     {
         auto frame = framePool.TryGetNextFrame();
         auto timeStamp = frame.SystemRelativeTime();
@@ -152,44 +166,107 @@ winrt::IAsyncAction MainAsync(std::vector<std::wstring> const& args)
         {
             return;
         }
-        lastTimeStamp = timeStamp;
 
         auto composedFrame = frameCompositor->ProcessFrame(frame);
+        auto diff = textureDiffer->ProcessFrame(composedFrame.Texture);
 
-        // Compute the frame delay
-        auto millisconds = std::chrono::duration_cast<std::chrono::milliseconds>(timeStampDelta);
-        // Use 10ms units
-        auto frameDelay = millisconds.count() / 10;
-
-        // Copy the composed frame into the gif texture
-        d3dContext->CopyResource(
-            gifTexture.get(),
-            composedFrame.Texture.get());
-
-        // Make a D2D bitmap so that we can hand this off to WIC
-        winrt::com_ptr<ID2D1Bitmap1> d2dBitmap;
-        winrt::check_hresult(d2dContext->CreateBitmapFromDxgiSurface(gifTexture.as<IDXGISurface>().get(), nullptr, d2dBitmap.put()));
-
-        // Setup our WIC frame (note the matching pixel format)
-        winrt::com_ptr<IWICBitmapFrameEncode> wicFrame;
-        winrt::check_hresult(encoder->CreateNewFrame(wicFrame.put(), nullptr));
-        winrt::check_hresult(wicFrame->Initialize(nullptr));
-        auto wicPixelFormat = GUID_WICPixelFormat32bppBGRA;
-        winrt::check_hresult(wicFrame->SetPixelFormat(&wicPixelFormat));
-
-        // Write our frame delay
-        winrt::com_ptr<IWICMetadataQueryWriter> metadata;
-        winrt::check_hresult(wicFrame->GetMetadataQueryWriter(metadata.put()));
+        if (auto diffRect = diff)
         {
-            PROPVARIANT delayValue = {};
-            delayValue.vt = VT_UI2;
-            delayValue.uiVal = static_cast<unsigned short>(frameDelay);
-            winrt::check_hresult(metadata->SetMetadataByName(L"/grctlext/Delay", &delayValue));
-        }
+            lastTimeStamp = timeStamp;
 
-        // Write the frame to our image (this must come after you write the metadata)
-        winrt::check_hresult(imageEncoder->WriteFrame(d2dBitmap.get(), wicFrame.get(), nullptr));
-        winrt::check_hresult(wicFrame->Commit());
+            // Inflate our rect to eliminate artifacts
+            auto inflateAmount = 1;
+            auto left = static_cast<uint32_t>(std::max(static_cast<int32_t>(diffRect->Left) - inflateAmount, 0));
+            auto top = static_cast<uint32_t>(std::max(static_cast<int32_t>(diffRect->Top) - inflateAmount, 0));
+            auto right = static_cast<uint32_t>(std::min(static_cast<int32_t>(diffRect->Right) + inflateAmount, itemSize.Width));
+            auto bottom = static_cast<uint32_t>(std::min(static_cast<int32_t>(diffRect->Bottom) + inflateAmount, itemSize.Height));
+
+            auto diffWidth = right - left;
+            auto diffHeight = bottom - top;
+
+            // Copy the relevant portion into our gif texture
+            D3D11_BOX region = {};
+            region.left = left;
+            region.right = right;
+            region.top = top;
+            region.bottom = bottom;
+            region.back = 1;
+            d3dContext->CopySubresourceRegion(gifTexture.get(), 0, left, top, 0, composedFrame.Texture.get(), 0, &region);
+
+            // Copy the bytes from the staging texture
+            D3D11_TEXTURE2D_DESC desc = {};
+            gifTexture->GetDesc(&desc);
+            size_t bytesPerPixel = 4; // Assuming BGRA8
+            D3D11_MAPPED_SUBRESOURCE mapped = {};
+            winrt::check_hresult(d3dContext->Map(gifTexture.get(), 0, D3D11_MAP_READ, 0, &mapped));
+            // Textures can occupy more space in video memory than you might expect given
+            // their size and pixel format. The RowPitch field in the D3D11_MAPPED_SUBRESOURCE
+            // tells you how many bytes there are per "row".
+            auto destStride = static_cast<size_t>(diffWidth) * bytesPerPixel;
+            std::vector<byte> bytes(destStride * static_cast<size_t>(diffHeight), 0);
+            auto source = reinterpret_cast<byte*>(mapped.pData);
+            auto dest = bytes.data();
+            source += (mapped.RowPitch * static_cast<size_t>(top)) + (static_cast<size_t>(left) * bytesPerPixel);
+            for (auto i = 0; i < (int)diffHeight; i++)
+            {
+                memcpy(dest, source, destStride);
+
+                source += mapped.RowPitch;
+                dest += destStride;
+            }
+            d3dContext->Unmap(gifTexture.get(), 0);
+
+            // Compute the frame delay
+            auto millisconds = std::chrono::duration_cast<std::chrono::milliseconds>(timeStampDelta);
+            // Use 10ms units
+            auto frameDelay = millisconds.count() / 10;
+
+            // Create a D2D bitmap from the bytes
+            // TODO: How to hand bytes directly to WIC?
+            D2D1_BITMAP_PROPERTIES1 bitmapProperties = {};
+            bitmapProperties.pixelFormat.format = DXGI_FORMAT_B8G8R8A8_UNORM;
+            bitmapProperties.pixelFormat.alphaMode = D2D1_ALPHA_MODE_PREMULTIPLIED;
+            bitmapProperties.dpiX = 96.0f;
+            bitmapProperties.dpiY = 96.0f;
+            winrt::com_ptr<ID2D1Bitmap1> d2dBitmap;
+            winrt::check_hresult(d2dContext->CreateBitmap(D2D_SIZE_U{ diffWidth, diffHeight }, reinterpret_cast<void*>(bytes.data()), static_cast<uint32_t>(destStride), &bitmapProperties, d2dBitmap.put()));
+            
+            // Setup our WIC frame (note the matching pixel format)
+            winrt::com_ptr<IWICBitmapFrameEncode> wicFrame;
+            winrt::check_hresult(encoder->CreateNewFrame(wicFrame.put(), nullptr));
+            winrt::check_hresult(wicFrame->Initialize(nullptr));
+            auto wicPixelFormat = GUID_WICPixelFormat32bppBGRA;
+            winrt::check_hresult(wicFrame->SetPixelFormat(&wicPixelFormat));
+
+            // Write frame metadata
+            winrt::com_ptr<IWICMetadataQueryWriter> metadata;
+            winrt::check_hresult(wicFrame->GetMetadataQueryWriter(metadata.put()));
+            // Delay
+            {
+                PROPVARIANT delayValue = {};
+                delayValue.vt = VT_UI2;
+                delayValue.uiVal = static_cast<unsigned short>(frameDelay);
+                winrt::check_hresult(metadata->SetMetadataByName(L"/grctlext/Delay", &delayValue));
+            }
+            // Left
+            {
+                PROPVARIANT metadataValue = {};
+                metadataValue.vt = VT_UI2;
+                metadataValue.uiVal = static_cast<unsigned short>(left);
+                winrt::check_hresult(metadata->SetMetadataByName(L"/imgdesc/Left", &metadataValue));
+            }
+            // Top
+            {
+                PROPVARIANT metadataValue = {};
+                metadataValue.vt = VT_UI2;
+                metadataValue.uiVal = static_cast<unsigned short>(top);
+                winrt::check_hresult(metadata->SetMetadataByName(L"/imgdesc/Top", &metadataValue));
+            }
+
+            // Write the frame to our image (this must come after you write the metadata)
+            winrt::check_hresult(imageEncoder->WriteFrame(d2dBitmap.get(), wicFrame.get(), nullptr));
+            winrt::check_hresult(wicFrame->Commit());
+        }
     });
 
     session.StartCapture();
