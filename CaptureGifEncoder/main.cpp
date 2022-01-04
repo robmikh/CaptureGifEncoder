@@ -184,52 +184,14 @@ winrt::IAsyncAction MainAsync(std::vector<std::wstring> const& args)
             auto diffWidth = right - left;
             auto diffHeight = bottom - top;
 
-            // Copy the relevant portion into our gif texture
-            D3D11_BOX region = {};
-            region.left = left;
-            region.right = right;
-            region.top = top;
-            region.bottom = bottom;
-            region.back = 1;
-            d3dContext->CopySubresourceRegion(gifTexture.get(), 0, left, top, 0, composedFrame.Texture.get(), 0, &region);
-
-            // Copy the bytes from the staging texture
-            D3D11_TEXTURE2D_DESC desc = {};
-            gifTexture->GetDesc(&desc);
-            size_t bytesPerPixel = 4; // Assuming BGRA8
-            D3D11_MAPPED_SUBRESOURCE mapped = {};
-            winrt::check_hresult(d3dContext->Map(gifTexture.get(), 0, D3D11_MAP_READ, 0, &mapped));
-            // Textures can occupy more space in video memory than you might expect given
-            // their size and pixel format. The RowPitch field in the D3D11_MAPPED_SUBRESOURCE
-            // tells you how many bytes there are per "row".
-            auto destStride = static_cast<size_t>(diffWidth) * bytesPerPixel;
-            std::vector<byte> bytes(destStride * static_cast<size_t>(diffHeight), 0);
-            auto source = reinterpret_cast<byte*>(mapped.pData);
-            auto dest = bytes.data();
-            source += (mapped.RowPitch * static_cast<size_t>(top)) + (static_cast<size_t>(left) * bytesPerPixel);
-            for (auto i = 0; i < (int)diffHeight; i++)
-            {
-                memcpy(dest, source, destStride);
-
-                source += mapped.RowPitch;
-                dest += destStride;
-            }
-            d3dContext->Unmap(gifTexture.get(), 0);
-
             // Compute the frame delay
             auto millisconds = std::chrono::duration_cast<std::chrono::milliseconds>(timeStampDelta);
             // Use 10ms units
             auto frameDelay = millisconds.count() / 10;
 
-            // Create a D2D bitmap from the bytes
-            // TODO: How to hand bytes directly to WIC?
-            D2D1_BITMAP_PROPERTIES1 bitmapProperties = {};
-            bitmapProperties.pixelFormat.format = DXGI_FORMAT_B8G8R8A8_UNORM;
-            bitmapProperties.pixelFormat.alphaMode = D2D1_ALPHA_MODE_PREMULTIPLIED;
-            bitmapProperties.dpiX = 96.0f;
-            bitmapProperties.dpiY = 96.0f;
+            // Create a D2D bitmap
             winrt::com_ptr<ID2D1Bitmap1> d2dBitmap;
-            winrt::check_hresult(d2dContext->CreateBitmap(D2D_SIZE_U{ diffWidth, diffHeight }, reinterpret_cast<void*>(bytes.data()), static_cast<uint32_t>(destStride), &bitmapProperties, d2dBitmap.put()));
+            winrt::check_hresult(d2dContext->CreateBitmapFromDxgiSurface(composedFrame.Texture.as<IDXGISurface>().get(), nullptr, d2dBitmap.put()));
             
             // Setup our WIC frame (note the matching pixel format)
             winrt::com_ptr<IWICBitmapFrameEncode> wicFrame;
@@ -264,7 +226,16 @@ winrt::IAsyncAction MainAsync(std::vector<std::wstring> const& args)
             }
 
             // Write the frame to our image (this must come after you write the metadata)
-            winrt::check_hresult(imageEncoder->WriteFrame(d2dBitmap.get(), wicFrame.get(), nullptr));
+            WICImageParameters frameParams = {};
+            frameParams.PixelFormat.format = DXGI_FORMAT_B8G8R8A8_UNORM;
+            frameParams.PixelFormat.alphaMode = D2D1_ALPHA_MODE_PREMULTIPLIED;
+            frameParams.DpiX = 96.0f;
+            frameParams.DpiY = 96.0f;
+            frameParams.Left = static_cast<float>(left);
+            frameParams.Top = static_cast<float>(top);
+            frameParams.PixelWidth = diffWidth;
+            frameParams.PixelHeight  = diffHeight;
+            winrt::check_hresult(imageEncoder->WriteFrame(d2dBitmap.get(), wicFrame.get(), &frameParams));
             winrt::check_hresult(wicFrame->Commit());
         }
     });
