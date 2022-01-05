@@ -66,7 +66,7 @@ winrt::IAsyncAction MainAsync(std::vector<std::wstring> const& args)
     auto framePool = winrt::Direct3D11CaptureFramePool::CreateFreeThreaded(
         device,
         winrt::DirectXPixelFormat::B8G8R8A8UIntNormalized,
-        1,
+        2,
         captureSize);
     auto session = framePool.CreateCaptureSession(item);
 
