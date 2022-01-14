@@ -1,9 +1,9 @@
 name: Build with Artifacts
 
-on: 
+on:
   push:
-    branches:
-      - master
+    tags:
+      - 'v*'
 
 env:
   # Path to the solution file relative to the root of the project.
