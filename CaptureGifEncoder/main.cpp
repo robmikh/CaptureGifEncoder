@@ -25,10 +25,14 @@ winrt::IAsyncAction MainAsync(std::vector<std::wstring> const& args)
     // Arg validation
     if (args.size() <= 0)
     {
-        wprintf(L"Invalid input!\n");
+        wprintf(L"Invalid input! Expecting a string that matches part of a window title.\n");
         co_return;
     }
     auto windowQuery = args[0];
+    
+    // Change the console title so that we don't record ourselves
+    SetConsoleTitleW(L"CaptureGifEncoder");
+    co_await std::chrono::milliseconds(100);
 
     // Find the window we want to record
     auto matchedWindows = FindWindowsByTitle(windowQuery);
