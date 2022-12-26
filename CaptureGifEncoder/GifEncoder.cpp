@@ -130,11 +130,6 @@ winrt::IAsyncOperation<bool> GifEncoder::ProcessFrameAsync(ComposedFrame const& 
         auto diffWidth = right - left;
         auto diffHeight = bottom - top;
 
-        // Compute the frame delay
-        auto millisconds = std::chrono::duration_cast<std::chrono::milliseconds>(timeStampDelta);
-        // Use 10ms units
-        auto frameDelay = millisconds.count() / 10;
-
         // Copy the relevant portion into our staging texture
         D3D11_BOX region = {};
         region.left = left;
@@ -167,33 +162,59 @@ winrt::IAsyncOperation<bool> GifEncoder::ProcessFrameAsync(ComposedFrame const& 
         }
         m_d3dContext->Unmap(m_stagingTexture.get(), 0);
 
-        // Advance to the next frame (we don't do this at the end to avoid empty frames)
-        if (frameCount > 0)
+        auto frame = std::make_shared<GifFrameImage>(std::move(bytes), DiffRect{ left, top, right, bottom }, composedFrame.SystemRelativeTime);
+        //co_await EncodeFrameAsync(frame, composedFrame.SystemRelativeTime + timeStampDelta);
+        m_previousFrame.swap(frame);
+        if (frame != nullptr)
         {
-            co_await m_encoder.GoToNextFrameAsync();
+            auto currentTime = composedFrame.SystemRelativeTime;
+            if (force)
+            {
+                currentTime += timeStampDelta;
+            }
+            co_await EncodeFrameAsync(frame, currentTime);
         }
 
-        // Write our frame delay
-        co_await m_encoder.BitmapProperties().SetPropertiesAsync(
-            {
-                { L"/grctlext/Delay", winrt::BitmapTypedValue(winrt::PropertyValue::CreateUInt16(static_cast<uint16_t>(frameDelay)), winrt::PropertyType::UInt16) },
-                { L"/imgdesc/Left", winrt::BitmapTypedValue(winrt::PropertyValue::CreateUInt16(static_cast<uint16_t>(left)), winrt::PropertyType::UInt16) },
-                { L"/imgdesc/Top", winrt::BitmapTypedValue(winrt::PropertyValue::CreateUInt16(static_cast<uint16_t>(top)), winrt::PropertyType::UInt16) },
-            });
-
-        // Write the frame to our image
-        m_encoder.SetPixelData(
-            winrt::BitmapPixelFormat::Bgra8,
-            winrt::BitmapAlphaMode::Premultiplied,
-            diffWidth,
-            diffHeight,
-            1.0,
-            1.0,
-            bytes);
-
-        frameCount++;
         updated = true;
     }
 
     co_return updated;
+}
+
+winrt::IAsyncAction GifEncoder::EncodeFrameAsync(std::shared_ptr<GifFrameImage> frame, winrt::TimeSpan currentTime)
+{
+    auto frameWidth = frame->Rect.Right - frame->Rect.Left;
+    auto frameHeight = frame->Rect.Bottom - frame->Rect.Top;
+
+    auto frameDuration = currentTime - frame->TimeStamp;
+    // Compute the frame delay
+    auto millisconds = std::chrono::duration_cast<std::chrono::milliseconds>(frameDuration);
+    // Use 10ms units
+    auto frameDelay = millisconds.count() / 10;
+
+    // Advance to the next frame (we don't do this at the end to avoid empty frames)
+    if (frameCount > 0)
+    {
+        co_await m_encoder.GoToNextFrameAsync();
+    }
+
+    // Write our frame delay
+    co_await m_encoder.BitmapProperties().SetPropertiesAsync(
+        {
+            { L"/grctlext/Delay", winrt::BitmapTypedValue(winrt::PropertyValue::CreateUInt16(static_cast<uint16_t>(frameDelay)), winrt::PropertyType::UInt16) },
+            { L"/imgdesc/Left", winrt::BitmapTypedValue(winrt::PropertyValue::CreateUInt16(static_cast<uint16_t>(frame->Rect.Left)), winrt::PropertyType::UInt16) },
+            { L"/imgdesc/Top", winrt::BitmapTypedValue(winrt::PropertyValue::CreateUInt16(static_cast<uint16_t>(frame->Rect.Top)), winrt::PropertyType::UInt16) },
+        });
+
+    // Write the frame to our image
+    m_encoder.SetPixelData(
+        winrt::BitmapPixelFormat::Bgra8,
+        winrt::BitmapAlphaMode::Premultiplied,
+        frameWidth,
+        frameHeight,
+        1.0,
+        1.0,
+        frame->Bytes);
+
+    frameCount++;
 }
