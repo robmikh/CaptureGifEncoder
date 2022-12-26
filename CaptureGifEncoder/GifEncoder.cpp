@@ -22,6 +22,7 @@ GifEncoder::GifEncoder(
     winrt::SizeInt32 gifSize)
 {
     m_gifSize = gifSize;
+    m_d3dDevice = d3dDevice;
     winrt::check_hresult(d2dDevice->CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE, m_d2dContext.put()));
     auto abiStream = util::CreateStreamFromRandomAccessStream(stream);
 
@@ -121,65 +122,85 @@ bool GifEncoder::ProcessFrame(ComposedFrame const& composedFrame, bool force)
         auto right = static_cast<uint32_t>(std::min(static_cast<int32_t>(diffRect->Right) + inflateAmount, m_gifSize.Width));
         auto bottom = static_cast<uint32_t>(std::min(static_cast<int32_t>(diffRect->Bottom) + inflateAmount, m_gifSize.Height));
 
-        auto diffWidth = right - left;
-        auto diffHeight = bottom - top;
+        // Create the frame
+        auto textureCopy = util::CopyD3DTexture(m_d3dDevice, composedFrame.Texture, false);
+        auto frame = std::make_shared<GifFrameImage>(textureCopy, DiffRect { left, top, right, bottom }, composedFrame.SystemRelativeTime);
 
-        // Compute the frame delay
-        auto millisconds = std::chrono::duration_cast<std::chrono::milliseconds>(timeStampDelta);
-        // Use 10ms units
-        auto frameDelay = millisconds.count() / 10;
-
-        // Create a D2D bitmap
-        winrt::com_ptr<ID2D1Bitmap1> d2dBitmap;
-        winrt::check_hresult(m_d2dContext->CreateBitmapFromDxgiSurface(composedFrame.Texture.as<IDXGISurface>().get(), nullptr, d2dBitmap.put()));
-
-        // Setup our WIC frame (note the matching pixel format)
-        winrt::com_ptr<IWICBitmapFrameEncode> wicFrame;
-        winrt::check_hresult(m_encoder->CreateNewFrame(wicFrame.put(), nullptr));
-        winrt::check_hresult(wicFrame->Initialize(nullptr));
-        auto wicPixelFormat = GUID_WICPixelFormat32bppBGRA;
-        winrt::check_hresult(wicFrame->SetPixelFormat(&wicPixelFormat));
-
-        // Write frame metadata
-        winrt::com_ptr<IWICMetadataQueryWriter> metadata;
-        winrt::check_hresult(wicFrame->GetMetadataQueryWriter(metadata.put()));
-        // Delay
+        // Encode the frame
+        m_previousFrame.swap(frame);
+        if (frame != nullptr)
         {
-            PROPVARIANT delayValue = {};
-            delayValue.vt = VT_UI2;
-            delayValue.uiVal = static_cast<unsigned short>(frameDelay);
-            winrt::check_hresult(metadata->SetMetadataByName(L"/grctlext/Delay", &delayValue));
+            auto currentTime = composedFrame.SystemRelativeTime;
+            if (force)
+            {
+                currentTime += timeStampDelta;
+            }
+            EncodeFrame(frame, currentTime);
         }
-        // Left
-        {
-            PROPVARIANT metadataValue = {};
-            metadataValue.vt = VT_UI2;
-            metadataValue.uiVal = static_cast<unsigned short>(left);
-            winrt::check_hresult(metadata->SetMetadataByName(L"/imgdesc/Left", &metadataValue));
-        }
-        // Top
-        {
-            PROPVARIANT metadataValue = {};
-            metadataValue.vt = VT_UI2;
-            metadataValue.uiVal = static_cast<unsigned short>(top);
-            winrt::check_hresult(metadata->SetMetadataByName(L"/imgdesc/Top", &metadataValue));
-        }
-
-        // Write the frame to our image (this must come after you write the metadata)
-        WICImageParameters frameParams = {};
-        frameParams.PixelFormat.format = DXGI_FORMAT_B8G8R8A8_UNORM;
-        frameParams.PixelFormat.alphaMode = D2D1_ALPHA_MODE_PREMULTIPLIED;
-        frameParams.DpiX = 96.0f;
-        frameParams.DpiY = 96.0f;
-        frameParams.Left = static_cast<float>(left);
-        frameParams.Top = static_cast<float>(top);
-        frameParams.PixelWidth = diffWidth;
-        frameParams.PixelHeight = diffHeight;
-        winrt::check_hresult(m_imageEncoder->WriteFrame(d2dBitmap.get(), wicFrame.get(), &frameParams));
-        winrt::check_hresult(wicFrame->Commit());
 
         updated = true;
     }
 
     return updated;
+}
+
+void GifEncoder::EncodeFrame(std::shared_ptr<GifFrameImage> const& frame, winrt::Windows::Foundation::TimeSpan const& currentTime)
+{
+    auto diffWidth = frame->Rect.Right - frame->Rect.Left;
+    auto diffHeight = frame->Rect.Bottom - frame->Rect.Top;
+
+    auto frameDuration = currentTime - frame->TimeStamp;
+    // Compute the frame delay
+    auto millisconds = std::chrono::duration_cast<std::chrono::milliseconds>(frameDuration);
+    // Use 10ms units
+    auto frameDelay = millisconds.count() / 10;
+
+    // Create a D2D bitmap
+    winrt::com_ptr<ID2D1Bitmap1> d2dBitmap;
+    winrt::check_hresult(m_d2dContext->CreateBitmapFromDxgiSurface(frame->Texture.as<IDXGISurface>().get(), nullptr, d2dBitmap.put()));
+
+    // Setup our WIC frame (note the matching pixel format)
+    winrt::com_ptr<IWICBitmapFrameEncode> wicFrame;
+    winrt::check_hresult(m_encoder->CreateNewFrame(wicFrame.put(), nullptr));
+    winrt::check_hresult(wicFrame->Initialize(nullptr));
+    auto wicPixelFormat = GUID_WICPixelFormat32bppBGRA;
+    winrt::check_hresult(wicFrame->SetPixelFormat(&wicPixelFormat));
+
+    // Write frame metadata
+    winrt::com_ptr<IWICMetadataQueryWriter> metadata;
+    winrt::check_hresult(wicFrame->GetMetadataQueryWriter(metadata.put()));
+    // Delay
+    {
+        PROPVARIANT delayValue = {};
+        delayValue.vt = VT_UI2;
+        delayValue.uiVal = static_cast<unsigned short>(frameDelay);
+        winrt::check_hresult(metadata->SetMetadataByName(L"/grctlext/Delay", &delayValue));
+    }
+    // Left
+    {
+        PROPVARIANT metadataValue = {};
+        metadataValue.vt = VT_UI2;
+        metadataValue.uiVal = static_cast<unsigned short>(frame->Rect.Left);
+        winrt::check_hresult(metadata->SetMetadataByName(L"/imgdesc/Left", &metadataValue));
+    }
+    // Top
+    {
+        PROPVARIANT metadataValue = {};
+        metadataValue.vt = VT_UI2;
+        metadataValue.uiVal = static_cast<unsigned short>(frame->Rect.Top);
+        winrt::check_hresult(metadata->SetMetadataByName(L"/imgdesc/Top", &metadataValue));
+    }
+
+    // Write the frame to our image (this must come after you write the metadata)
+    WICImageParameters frameParams = {};
+    frameParams.PixelFormat.format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    frameParams.PixelFormat.alphaMode = D2D1_ALPHA_MODE_PREMULTIPLIED;
+    frameParams.DpiX = 96.0f;
+    frameParams.DpiY = 96.0f;
+    frameParams.Left = static_cast<float>(frame->Rect.Left);
+    frameParams.Top = static_cast<float>(frame->Rect.Top);
+    frameParams.PixelWidth = diffWidth;
+    frameParams.PixelHeight = diffHeight;
+    winrt::check_hresult(m_imageEncoder->WriteFrame(d2dBitmap.get(), wicFrame.get(), &frameParams));
+    winrt::check_hresult(wicFrame->Commit());
 }
