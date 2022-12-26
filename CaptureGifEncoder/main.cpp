@@ -92,7 +92,7 @@ winrt::IAsyncAction MainAsync(std::vector<std::wstring> const& args)
     // Stop the capture (and give it a little bit of time)
     session.Close();
     framePool.Close();
-    co_await std::chrono::milliseconds(100);
+    co_await winrt::resume_after(std::chrono::milliseconds(100));
 
     // Finish our recording and display the file
     co_await encoder->StopEncodingAsync();

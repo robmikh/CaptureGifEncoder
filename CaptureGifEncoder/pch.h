@@ -28,6 +28,7 @@
 #include <iostream>
 
 #include <wil/resource.h>
+#include <wil/cppwinrt_helpers.h>
 
 // D3D
 #include <d3d11_4.h>
@@ -37,6 +38,12 @@
 
 // DWM
 #include <dwmapi.h>
+
+// C++20 Compat
+inline auto operator co_await(winrt::Windows::System::DispatcherQueue dispatcher)
+{
+	return wil::resume_foreground(dispatcher);
+}
 
 // Helpers
 #include <robmikh.common/d3dHelpers.h>
